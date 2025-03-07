@@ -1,0 +1,87 @@
+{
+    "VARISCITE" : {
+        /* Target Device Settings */
+        "TARGET_IP": "192.168.88.172",
+
+        /* Project Settings */
+        "PROGRAM": "demo",
+
+        /* Yocto SDK Configuration */
+        "ARCH": "arm-poky-linux-gnueabi",
+
+        "OECORE_NATIVE_SYSROOT": "/workdir/build/tmp/deploy/sdk-meta-toolchain/sysroots/x86_64-pokysdk-linux",
+
+        "SDKTARGETSYSROOT": "/workdir/build/tmp/deploy/sdk-meta-toolchain/sysroots/cortexa7t2hf-neon-poky-linux-gnueabi",
+
+        /* Yocto SDK Constants */
+        "CC_PREFIX": "${config:VARISCITE.OECORE_NATIVE_SYSROOT}/usr/bin/${config:VARISCITE.ARCH}/${config:VARISCITE.ARCH}-",
+
+        "CXX": "${config:VARISCITE.CC_PREFIX}g++ -fstack-protector-strong -Os -D_FORTIFY_SOURCE=2 -Wformat -Wformat-security -Werror=format-security --sysroot=${config:VARISCITE.SDKTARGETSYSROOT}",
+
+        "CC": "${config:VARISCITE.CC_PREFIX}gcc -fstack-protector-strong -Os -D_FORTIFY_SOURCE=2 -Wformat -Wformat-security -Werror=format-security --sysroot=${config:VARISCITE.SDKTARGETSYSROOT}",
+    },
+    "files.associations": {
+        "string": "cpp",
+        "iostream": "cpp",
+        "ostream": "cpp",
+        "array": "cpp",
+        "atomic": "cpp",
+        "bit": "cpp",
+        "*.tcc": "cpp",
+        "cctype": "cpp",
+        "chrono": "cpp",
+        "clocale": "cpp",
+        "cmath": "cpp",
+        "cstdarg": "cpp",
+        "cstddef": "cpp",
+        "cstdint": "cpp",
+        "cstdio": "cpp",
+        "cstdlib": "cpp",
+        "cstring": "cpp",
+        "ctime": "cpp",
+        "cwchar": "cpp",
+        "cwctype": "cpp",
+        "deque": "cpp",
+        "map": "cpp",
+        "unordered_map": "cpp",
+        "vector": "cpp",
+        "exception": "cpp",
+        "algorithm": "cpp",
+        "functional": "cpp",
+        "iterator": "cpp",
+        "memory": "cpp",
+        "memory_resource": "cpp",
+        "numeric": "cpp",
+        "optional": "cpp",
+        "random": "cpp",
+        "ratio": "cpp",
+        "string_view": "cpp",
+        "system_error": "cpp",
+        "tuple": "cpp",
+        "type_traits": "cpp",
+        "utility": "cpp",
+        "fstream": "cpp",
+        "initializer_list": "cpp",
+        "iosfwd": "cpp",
+        "istream": "cpp",
+        "limits": "cpp",
+        "new": "cpp",
+        "sstream": "cpp",
+        "stdexcept": "cpp",
+        "streambuf": "cpp",
+        "thread": "cpp",
+        "cinttypes": "cpp",
+        "typeinfo": "cpp",
+        "variant": "cpp",
+        "compare": "cpp",
+        "concepts": "cpp",
+        "numbers": "cpp",
+        "bitset": "cpp",
+        "condition_variable": "cpp",
+        "regex": "cpp",
+        "shared_mutex": "cpp",
+        "semaphore": "cpp",
+        "stop_token": "cpp"
+    },
+    "C_Cpp.errorSquiggles": "disabled",
+}

@@ -1,0 +1,67 @@
+{
+    "version": "2.0.0",
+    /* Configure Yocto SDK Constants from settings.json */
+    "options": {
+        "env": {
+            "CXX": "${config:VARISCITE.CXX}",
+            "CC": "${config:VARISCITE.CC}",
+        }
+    },
+    /* Configure integrated VS Code Terminal */
+    "presentation": {
+        "echo": false,
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "showReuseMessage": true,
+    },
+    "tasks": [
+        /* Configure launch.json (debug) preLaunchTask Task */
+        {
+            "label": "var-deploy-gdb",
+            "isBackground": true,
+            "problemMatcher":{
+                "base": "$gcc",
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "Deploying to target",
+                    "endsPattern": "Starting GDB Server on Target"
+                }
+            },
+            "type": "shell",
+            "command": "sh",
+            "args": [
+                "var-deploy-gdb.sh",
+                "${config:VARISCITE.TARGET_IP}",
+                "${config:VARISCITE.PROGRAM}"
+            ],
+            "dependsOn": ["build"],
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            }
+        },
+        /* Meson build */
+        {
+            "label": "Meson build",
+            "type": "shell",
+            "command": "rm -rf buildir && source /home/dinhle/workspace/kvm_yocto_5.15/build/tmp/deploy/sdk_elink/environment-setup-cortexa7t2hf-neon-poky-linux-gnueabi && meson buildir --buildtype debug && ninja -C buildir",
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            }
+        },
+        /* SCP */
+        {
+            "label": "SCP",
+            "type": "shell",
+            "command": "scp buildir/demo root@192.168.88.172:/home/root",
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            }
+        },
+    ]
+}
