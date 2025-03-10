@@ -11,6 +11,7 @@
 #include <thread>
 #include <cctype> 
 #include <chrono>
+#include <atomic>
 
 #include <gio/gio.h>
 #include <glib.h>
@@ -18,6 +19,7 @@
 #include <bluetooth/bluetooth.h>
 #include <bluetooth/l2cap.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 
 #define BT_DEV_NAME "Elink_Bluetooth_Keyboard"
 #define BT_DEV_ADDR "48:8F:4C:FF:1E:6A"
@@ -25,6 +27,8 @@
 #define SDP_RECORD_PATH "/etc/bluetooth/sdp_record.xml"
 #define P_CTRL 0x11
 #define P_INTR 0x13
+
+std::atomic<bool> pairingAgentRunning(false);
 
 struct BluetoothConnection {
     int control_socket;
@@ -41,6 +45,7 @@ void init_bt_device(){
 
     std::string command = "hciconfig hci0 name \"" BT_DEV_NAME "\"";
     system(command.c_str());
+    system("hciconfig hci0 piscan");
 }
 
 /* === LOAD SDP RECORD === */
@@ -54,6 +59,107 @@ std::string load_sdp_service_record(const char* filename) {
     std::stringstream buffer;
     buffer << file.rdbuf();
     return buffer.str();
+}
+
+/* === READ BLUETOOTHCTL OUTPUT === */
+void read_bluetoothctl_output(int read_fd, int write_fd) {
+    char buffer[512];
+    std::string lineBuffer;
+
+    while (true) {
+        ssize_t bytesRead = read(read_fd, buffer, sizeof(buffer) - 1);
+
+        if (bytesRead <= 0) {
+            break;
+        }
+
+        buffer[bytesRead] = '\0';
+        lineBuffer += buffer;
+
+        size_t pos;
+        while ((pos = lineBuffer.find('\n')) != std::string::npos) {
+            std::string line = lineBuffer.substr(0, pos);
+            lineBuffer.erase(0, pos + 1);
+
+            std::cout << "[bluetoothctl]: " << line << std::endl;
+
+            if (line.find("Request confirmation") != std::string::npos){
+                std::string yes = "yes\n";
+                write(write_fd, yes.c_str(), yes.size());
+                std::cout << "[AUTO] Sent 'yes' to confirm passkey." << std::endl;
+                break;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+
+/* === AUTO PAIRING AGENT === */
+void autoPairingAgent(){
+    int pipe_in[2]; /* Parent WRITE - Child READ -> stdin */
+    int pipe_out[2]; /* Parent READ - Child WRITE -> stdout */
+
+    if (pipe(pipe_in) == -1 || pipe(pipe_out) == -1) {
+        std::cerr << "[ERROR] Failed to create pipes!" << std::endl;
+        return;
+    }
+
+    pid_t pid = fork();
+
+    if (pid == -1) {
+        std::cerr << "[ERROR] Fork failed!" << std::endl;
+        return;
+    }
+
+    if (pid == 0) {
+        /* Child -> bluetoothctl */
+        dup2(pipe_in[0], STDIN_FILENO);   /* Read input */
+        dup2(pipe_out[1], STDOUT_FILENO); /* Write output*/
+        dup2(pipe_out[1], STDERR_FILENO);
+
+        close(pipe_in[1]);
+        close(pipe_out[0]);
+
+        execlp("bluetoothctl", "bluetoothctl", nullptr);
+        std::cerr << "[ERROR] Failed to exec bluetoothctl!" << std::endl;
+        exit(1);
+    }
+    /* Parent -> bluetoothctl */
+    close(pipe_in[0]);
+    close(pipe_out[1]);
+
+    int write_fd = pipe_in[1];
+    int read_fd = pipe_out[0];
+
+    std::thread output_thread(read_bluetoothctl_output, read_fd, write_fd);
+
+    auto send_cmd = [&](const std::string& cmd) {
+        std::string full_cmd = cmd + "\n";
+        write(write_fd, full_cmd.c_str(), full_cmd.size());
+        std::cout << "[CMD] " << cmd << std::endl;
+    };
+
+    while (true) {
+        std::string input;
+        std::getline(std::cin, input);
+
+        if (input.find("Paired: yes") != std::string::npos) {
+            break;
+        }
+        
+        if (input == "exit") {
+            break;
+        }
+
+        send_cmd(input);
+    }
+
+    close(write_fd);
+    output_thread.join();
+
+    int status;
+    waitpid(pid, &status, 0);
+    std::cout << "[INFO] bluetoothctl exited with status " << status << std::endl;
 }
 
 /* === LISTEN_FOR_CONNECTION === */
@@ -105,6 +211,17 @@ BluetoothConnection listen_for_connections(){
     /* Listen */
     listen(conn.control_socket, 1);
     listen(conn.interrupt_socket, 1);
+
+    /* === RUNNING AGENT PAIRING IN ANOTHER THREAD === */
+    std::thread agentThread([](){
+        pairingAgentRunning = true;
+        std::cout << ">>> Running auto pairing agent...\n";
+        autoPairingAgent();
+        pairingAgentRunning.store(false);
+    });
+
+    /* Ensure agentThread is finished. */
+    agentThread.join();
 
     std::cout << "4. Waiting for Control channel connection..." << std::endl;
 
@@ -341,6 +458,7 @@ int modkey(const std::string& evdev_keycode) {
 }
 
 /* === SEND STRING === */
+/*
 bool send_string(const BluetoothConnection &conn, const std::string &message) {
     if (conn.interrupt_client <= 0) {
         std::cerr << "Interrupt client socket not connected!" << std::endl;
@@ -357,6 +475,7 @@ bool send_string(const BluetoothConnection &conn, const std::string &message) {
     // std::cout << "Sent " << bytes_sent << " bytes: " << message << std::endl;
     return true;
 }
+*/
 
 /* === SEND KEY === */
 bool send_keys(const BluetoothConnection &conn, uint8_t modifier_byte, const std::array<uint8_t, 6> &keys) {
@@ -384,10 +503,10 @@ bool send_keys(const BluetoothConnection &conn, uint8_t modifier_byte, const std
     /* 3. Send HID Report through interupt channel */
     ssize_t bytes_sent = write(conn.interrupt_client, cmd_bytes, sizeof(cmd_bytes));
     if (bytes_sent < 0) {
-        perror("Error sending HID report to interrupt channel");
+        // perror("Error sending HID report to interrupt channel");
         return false;
     } else {
-        printf("Successfully sent %zd bytes to interrupt channel\n", bytes_sent);
+        // printf("Successfully sent %zd bytes to interrupt channel\n", bytes_sent);
         return true;
     }
 }
@@ -647,9 +766,7 @@ int main(int argc, char *argv[]) {
     std::cout << "Restarting bluetooth service" << std::endl;
     system("service bluetooth stop");
     system("/usr/libexec/bluetooth/bluetoothd -p time&");
-    system("hciconfig hci0 down");
     system("hciconfig hci0 up");
-    system("hciconfig hci0 piscan");
 
     init_server();
     return 0;
