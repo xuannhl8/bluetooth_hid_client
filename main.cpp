@@ -403,18 +403,30 @@ bool send_mouse(const BluetoothConnection &conn, uint8_t buttons, const std::arr
      * Byte 3: Wheel movement 
      */
 
-    std::array<uint8_t, 4> report = {
-        buttons,              
-        static_cast<uint8_t>(rel_move[0]), 
-        static_cast<uint8_t>(rel_move[1]), 
-        static_cast<uint8_t>(rel_move[2])  
-    };
+    /* Check connection is available? */
+    if (conn.interrupt_client <= 0) {
+        std::cerr << "Interrupt client socket not connected!" << std::endl;
+        return false;
+    }
 
-    /* Send data report through bluetooth */
-    ssize_t bytes_sent = write(conn.interrupt_client, report.data(), report.size());
-    bool success = bytes_sent > 0;
+    uint8_t cmd_bytes[6];
 
-    /* Debug */
+    cmd_bytes[0] = 0xA1;
+    cmd_bytes[1] = 0x02;
+    cmd_bytes[2] = buttons;
+    cmd_bytes[3] = rel_move[0];
+    cmd_bytes[4] = rel_move[1];
+    cmd_bytes[5] = rel_move[2];
+
+    /* Send data report through interrupt socket */
+    ssize_t bytes_sent = write(conn.interrupt_client, cmd_bytes, sizeof(cmd_bytes));
+
+    if (bytes_sent < 0) {
+        perror("Error sending mouse report to interrupt channel");
+        return false;
+    }
+
+    /* Debug - optional */
     std::cout << "Sending mouse report -> "
               << "Buttons: " << (int)buttons
               << ", X: " << (int)rel_move[0]
@@ -422,8 +434,9 @@ bool send_mouse(const BluetoothConnection &conn, uint8_t buttons, const std::arr
               << ", Wheel: " << (int)rel_move[2]
               << std::endl;
 
-    return success;
+    return true;
 }
+
 
 /* === SEND STRING UPGRADE === */
 void send_string_input(const BluetoothConnection &conn, const std::string &text, float key_down_time = 0.01, float key_delay = 0.05) {
@@ -594,7 +607,13 @@ void init_server(){
             if (v == "q") {
                 std::cout << "Exiting loop..." << std::endl;
                 close_connection(bt_conn);
-                // break;
+
+                /* Cleanup */
+                g_main_loop_unref(loop);
+                g_object_unref(proxy);
+                g_object_unref(conn);
+
+                return; /* Exit init_server */ 
             } else if (v == "m") {
                 std::cout << "Send mouse" << std::endl;
 
