@@ -437,7 +437,6 @@ bool send_mouse(const BluetoothConnection &conn, uint8_t buttons, const std::arr
     return true;
 }
 
-
 /* === SEND STRING UPGRADE === */
 void send_string_input(const BluetoothConnection &conn, const std::string &text, float key_down_time = 0.01, float key_delay = 0.05) {
     for (const char &c : text) {
