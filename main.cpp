@@ -22,13 +22,13 @@
 #include <sys/wait.h>
 
 #define BT_DEV_NAME "Elink_Bluetooth_Keyboard"
-#define BT_DEV_ADDR "48:8F:4C:FF:1E:6A"
 #define HID_PROFILE_UUID "00001124-0000-1000-8000-00805f9b34fb"
 #define SDP_RECORD_PATH "/etc/bluetooth/sdp_record.xml"
 #define P_CTRL 0x11
 #define P_INTR 0x13
 
 std::atomic<bool> pairingAgentRunning(false);
+std::atomic<bool> paired_successfully(false);
 
 struct BluetoothConnection {
     int control_socket;
@@ -36,6 +36,45 @@ struct BluetoothConnection {
     int control_client;
     int interrupt_client;
 };
+
+/* === HCICONFIG === */
+std::string getBluetoothDeviceAddress(const std::string& hci_dev = "hci0"){
+    std::string cmd = "hciconfig " + hci_dev;
+
+    FILE* pipe = popen(cmd.c_str(), "r");
+
+    if (!pipe) {
+        std::cerr << "[ERROR] Failed to run hciconfig command!" << std::endl;
+        return "";
+    }
+
+    char buffer[256];
+    std::string result;
+
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        result += buffer;
+    }
+
+    pclose(pipe);
+
+    /* Find BD Address */
+    std::size_t pos = result.find("BD Address:");
+    if (pos == std::string::npos) {
+        std::cerr << "BD Address not found!" << std::endl;
+        return "";
+    }
+
+    pos += std::string("BD Address:").length();
+
+    while (pos < result.size() && result[pos] == ' ') {
+        ++pos;
+    }
+
+    std::string bt_address = result.substr(pos, 17); 
+    std::cout << "Local Bluetooth Address: " << bt_address << std::endl;
+
+    return bt_address;
+}
 
 /* === INIT BLUETOOTH DEVICE === */
 void init_bt_device(){
@@ -81,16 +120,26 @@ void read_bluetoothctl_output(int read_fd, int write_fd) {
             std::string line = lineBuffer.substr(0, pos);
             lineBuffer.erase(0, pos + 1);
 
-            std::cout << "[bluetoothctl]: " << line << std::endl;
+            // std::cout << "[bluetoothctl]: " << line << std::endl;
+
+            std::string line_trim = line;
+            line_trim.erase(0, line_trim.find_first_not_of(" \t"));
+
+            /* Skip bluetoothctl exit */
+            if (line_trim == "exit") {
+                continue;
+            }
 
             if (line.find("Request confirmation") != std::string::npos){
                 std::string yes = "yes\n";
                 write(write_fd, yes.c_str(), yes.size());
-                std::cout << "[AUTO] Sent 'yes' to confirm passkey." << std::endl;
                 break;
             }
+
+            if (line.find("Paired: yes") != std::string::npos) {
+                paired_successfully = true;
+            }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 }
 
@@ -136,22 +185,17 @@ void autoPairingAgent(){
     auto send_cmd = [&](const std::string& cmd) {
         std::string full_cmd = cmd + "\n";
         write(write_fd, full_cmd.c_str(), full_cmd.size());
-        std::cout << "[CMD] " << cmd << std::endl;
     };
 
+    bool exit_sent = false;
+
     while (true) {
-        std::string input;
-        std::getline(std::cin, input);
-
-        if (input.find("Paired: yes") != std::string::npos) {
+        // Nếu đã paired thì gửi exit và thoát vòng lặp
+        if (paired_successfully && !exit_sent) {
+            send_cmd("exit");
+            exit_sent = true;
             break;
         }
-        
-        if (input == "exit") {
-            break;
-        }
-
-        send_cmd(input);
     }
 
     close(write_fd);
@@ -159,11 +203,13 @@ void autoPairingAgent(){
 
     int status;
     waitpid(pid, &status, 0);
-    std::cout << "[INFO] bluetoothctl exited with status " << status << std::endl;
 }
 
 /* === LISTEN_FOR_CONNECTION === */
 BluetoothConnection listen_for_connections(){
+
+    std::string bt_addr_str = getBluetoothDeviceAddress(); /* BD Address */
+
     std::cout << "Bluetooth HID L2CAP Server starting..." << std::endl;
 
     BluetoothConnection conn = {0, 0, 0, 0};
@@ -179,15 +225,15 @@ BluetoothConnection listen_for_connections(){
         return conn;
     }
 
-    std::cout << "2. Binding sockets to address and ports..." << std::endl;
+    std::cout << "2. Binding sockets to address and ports..." << std::endl;  
 
     /* Local address - server */
     sockaddr_l2 loc_addr_ctrl{}, loc_addr_intr{};
     memset(&loc_addr_ctrl, 0, sizeof(loc_addr_ctrl));
     memset(&loc_addr_intr, 0, sizeof(loc_addr_intr));
 
-    str2ba(BT_DEV_ADDR, &loc_addr_ctrl.l2_bdaddr);
-    str2ba(BT_DEV_ADDR, &loc_addr_intr.l2_bdaddr);
+    str2ba(bt_addr_str.c_str(), &loc_addr_ctrl.l2_bdaddr);
+    str2ba(bt_addr_str.c_str(), &loc_addr_intr.l2_bdaddr);
 
     loc_addr_ctrl.l2_family = AF_BLUETOOTH;
     loc_addr_ctrl.l2_psm = htobs(P_CTRL);
@@ -457,26 +503,6 @@ int modkey(const std::string& evdev_keycode) {
     }
 }
 
-/* === SEND STRING === */
-/*
-bool send_string(const BluetoothConnection &conn, const std::string &message) {
-    if (conn.interrupt_client <= 0) {
-        std::cerr << "Interrupt client socket not connected!" << std::endl;
-        return false;
-    }
-
-    ssize_t bytes_sent = send(conn.interrupt_client, message.c_str(), message.length(), 0);
-
-    if (bytes_sent < 0) {
-        perror("Failed to send data on interrupt channel");
-        return false;
-    }
-
-    // std::cout << "Sent " << bytes_sent << " bytes: " << message << std::endl;
-    return true;
-}
-*/
-
 /* === SEND KEY === */
 bool send_keys(const BluetoothConnection &conn, uint8_t modifier_byte, const std::array<uint8_t, 6> &keys) {
     /* HID input report: 10 bytes
@@ -503,10 +529,8 @@ bool send_keys(const BluetoothConnection &conn, uint8_t modifier_byte, const std
     /* 3. Send HID Report through interupt channel */
     ssize_t bytes_sent = write(conn.interrupt_client, cmd_bytes, sizeof(cmd_bytes));
     if (bytes_sent < 0) {
-        // perror("Error sending HID report to interrupt channel");
         return false;
     } else {
-        // printf("Successfully sent %zd bytes to interrupt channel\n", bytes_sent);
         return true;
     }
 }

@@ -4,7 +4,7 @@
         "TARGET_IP": "192.168.88.172",
 
         /* Project Settings */
-        "PROGRAM": "demo",
+        "PROGRAM": "hid-client",
 
         /* Yocto SDK Configuration */
         "ARCH": "arm-poky-linux-gnueabi",
