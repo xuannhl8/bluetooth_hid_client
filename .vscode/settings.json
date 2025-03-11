@@ -1,7 +1,7 @@
 {
     "VARISCITE" : {
         /* Target Device Settings */
-        "TARGET_IP": "192.168.88.172",
+        "TARGET_IP": "192.168.88.173",
 
         /* Project Settings */
         "PROGRAM": "hid-client",

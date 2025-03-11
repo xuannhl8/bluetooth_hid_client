@@ -125,7 +125,7 @@ void read_bluetoothctl_output(int read_fd, int write_fd) {
             std::string line_trim = line;
             line_trim.erase(0, line_trim.find_first_not_of(" \t"));
 
-            /* Skip bluetoothctl exit */
+            /* Skip bluetoothctl console fill command exit */
             if (line_trim == "exit") {
                 continue;
             }
@@ -138,6 +138,7 @@ void read_bluetoothctl_output(int read_fd, int write_fd) {
 
             if (line.find("Paired: yes") != std::string::npos) {
                 paired_successfully = true;
+                
             }
         }
     }
@@ -269,7 +270,7 @@ BluetoothConnection listen_for_connections(){
     /* Ensure agentThread is finished. */
     agentThread.join();
 
-    std::cout << "4. Waiting for Control channel connection..." << std::endl;
+    // std::cout << "4. Waiting for Control channel connection..." << std::endl;
 
     /* Accept control connection */
     sockaddr_l2 rem_addr_ctrl{};
@@ -284,9 +285,9 @@ BluetoothConnection listen_for_connections(){
     char ctrl_bdaddr[18] = { 0 };
     ba2str(&rem_addr_ctrl.l2_bdaddr, ctrl_bdaddr);
 
-    std::cout << "5. Accepted control connection from " << ctrl_bdaddr << std::endl;
+    std::cout << "4. Accepted control connection from " << ctrl_bdaddr << std::endl;
 
-    std::cout << "6. Waiting for Interrupt channel connection..." << std::endl;
+    // std::cout << "6. Waiting for Interrupt channel connection..." << std::endl;
 
     /* Accept interrupt connection */
     sockaddr_l2 rem_addr_intr{};
@@ -300,9 +301,10 @@ BluetoothConnection listen_for_connections(){
 
     char intr_bdaddr[18] = { 0 };
     ba2str(&rem_addr_intr.l2_bdaddr, intr_bdaddr);
-    std::cout << "7. Accepted interrupt connection from " << intr_bdaddr << std::endl;
 
-    std::cout << "8. L2CAP HID channels are ready!" << std::endl;
+    std::cout << "5. Accepted interrupt connection from " << intr_bdaddr << std::endl;
+
+    std::cout << "6. L2CAP HID channels are ready!" << std::endl;
 
     return conn;
 }
@@ -771,7 +773,6 @@ void init_server(){
     }
 
     /* Start the main loop */
-    std::cout << "Entering main loop. Press Ctrl+C to exit." << std::endl;
     g_main_loop_run(loop);
 
     /* Cleanup */
