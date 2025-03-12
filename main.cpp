@@ -12,6 +12,7 @@
 #include <cctype> 
 #include <chrono>
 #include <atomic>
+#include <algorithm>
 
 #include <gio/gio.h>
 #include <glib.h>
@@ -29,6 +30,7 @@
 
 std::atomic<bool> pairingAgentRunning(false);
 std::atomic<bool> paired_successfully(false);
+std::atomic<bool> connect_successfully(false);
 
 struct BluetoothConnection {
     int control_socket;
@@ -36,6 +38,41 @@ struct BluetoothConnection {
     int control_client;
     int interrupt_client;
 };
+
+/* === FUNCTION CHECK DEVICE STATUS === */
+bool is_device_paired(const std::string& mac_address_raw){
+    std::string mac_address = mac_address_raw;
+    std::transform(mac_address.begin(), mac_address.end(), mac_address.begin(), ::toupper);
+
+    std::string cmd = "bluetoothctl devices";
+
+    FILE* pipe = popen(cmd.c_str(), "r");
+
+    if (!pipe) {
+        std::cerr << "[ERROR] Failed to run bluetoothctl!" << std::endl;
+        return false;
+    }
+
+    char buffer[256];
+    std::string result;
+
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        result += buffer;
+    }
+
+    pclose(pipe);
+
+    std::string upper_result = result;
+    std::transform(upper_result.begin(), upper_result.end(), upper_result.begin(), ::toupper);
+
+    if (upper_result.find(mac_address) != std::string::npos) {
+        std::cout << "[INFO] Device " << mac_address_raw << " is listed in bluetoothctl devices!" << std::endl;
+        return true;
+    } else {
+        std::cout << "[INFO] Device " << mac_address_raw << " is NOT listed in bluetoothctl devices!" << std::endl;
+        return false;
+    }
+}
 
 /* === HCICONFIG === */
 std::string getBluetoothDeviceAddress(const std::string& hci_dev = "hci0"){
@@ -76,7 +113,6 @@ std::string getBluetoothDeviceAddress(const std::string& hci_dev = "hci0"){
     return bt_address;
 }
 
-/* === INIT BLUETOOTH DEVICE === */
 void init_bt_device(){
     std::cout << "Configuring bluetooth device" << std::endl;
     system("hciconfig hci0 up");
@@ -87,7 +123,6 @@ void init_bt_device(){
     system("hciconfig hci0 piscan");
 }
 
-/* === LOAD SDP RECORD === */
 std::string load_sdp_service_record(const char* filename) {
     std::ifstream file(filename);
     if (!file.is_open()) {
@@ -100,7 +135,6 @@ std::string load_sdp_service_record(const char* filename) {
     return buffer.str();
 }
 
-/* === READ BLUETOOTHCTL OUTPUT === */
 void read_bluetoothctl_output(int read_fd, int write_fd) {
     char buffer[512];
     std::string lineBuffer;
@@ -130,21 +164,44 @@ void read_bluetoothctl_output(int read_fd, int write_fd) {
                 continue;
             }
 
-            if (line.find("Request confirmation") != std::string::npos){
+            if (line.find("Request confirmation") != std::string::npos) {
                 std::string yes = "yes\n";
                 write(write_fd, yes.c_str(), yes.size());
+            }
+
+            if (line.find("Bonded: yes") != std::string::npos || 
+                line.find("Paired: yes") != std::string::npos) {
+            
+                paired_successfully = true;
+                // std::cout << "[INFO] Device paired successfully!" << std::endl;
                 break;
             }
 
-            if (line.find("Paired: yes") != std::string::npos) {
-                paired_successfully = true;
-                
+            // if (line.find("Paired: no") != std::string::npos) {
+            //     paired_successfully = false;
+            //     std::cout << "[ERROR] Device pairing failed!" << std::endl;
+            //     break;
+            // }
+
+            if (line.find("ServicesResolved: yes") != std::string::npos || 
+                line.find("Connected: yes") != std::string::npos) {
+            
+                connect_successfully = true;
+                std::cout << "[NOTIF] Device connected!" << std::endl;
+                break;
             }
+
+            // if (line.find("ServicesResolved: yes") != std::string::npos ||
+            //     line.find("Connected: no") != std::string::npos) {
+
+            //     connect_successfully = false;
+            //     std::cout << "[INFO] Device disconnected!" << std::endl;
+            //     break;;
+            // }
         }
     }
 }
 
-/* === AUTO PAIRING AGENT === */
 void autoPairingAgent(){
     int pipe_in[2]; /* Parent WRITE - Child READ -> stdin */
     int pipe_out[2]; /* Parent READ - Child WRITE -> stdout */
@@ -188,13 +245,9 @@ void autoPairingAgent(){
         write(write_fd, full_cmd.c_str(), full_cmd.size());
     };
 
-    bool exit_sent = false;
-
     while (true) {
-        // Nếu đã paired thì gửi exit và thoát vòng lặp
-        if (paired_successfully && !exit_sent) {
-            send_cmd("exit");
-            exit_sent = true;
+        if (paired_successfully || connect_successfully) {
+            // std::cout << "[NOTIF] Device paired and connected successfully. Exiting loop..." << std::endl;
             break;
         }
     }
@@ -206,10 +259,9 @@ void autoPairingAgent(){
     waitpid(pid, &status, 0);
 }
 
-/* === LISTEN_FOR_CONNECTION === */
 BluetoothConnection listen_for_connections(){
 
-    std::string bt_addr_str = getBluetoothDeviceAddress(); /* BD Address */
+    std::string bt_addr_str = getBluetoothDeviceAddress();
 
     std::cout << "Bluetooth HID L2CAP Server starting..." << std::endl;
 
@@ -228,7 +280,6 @@ BluetoothConnection listen_for_connections(){
 
     std::cout << "2. Binding sockets to address and ports..." << std::endl;  
 
-    /* Local address - server */
     sockaddr_l2 loc_addr_ctrl{}, loc_addr_intr{};
     memset(&loc_addr_ctrl, 0, sizeof(loc_addr_ctrl));
     memset(&loc_addr_intr, 0, sizeof(loc_addr_intr));
@@ -270,8 +321,6 @@ BluetoothConnection listen_for_connections(){
     /* Ensure agentThread is finished. */
     agentThread.join();
 
-    // std::cout << "4. Waiting for Control channel connection..." << std::endl;
-
     /* Accept control connection */
     sockaddr_l2 rem_addr_ctrl{};
     socklen_t opt = sizeof(rem_addr_ctrl);
@@ -281,13 +330,6 @@ BluetoothConnection listen_for_connections(){
         std::cerr << "Failed to accept control connection!" << std::endl;
         return conn;
     }
-
-    char ctrl_bdaddr[18] = { 0 };
-    ba2str(&rem_addr_ctrl.l2_bdaddr, ctrl_bdaddr);
-
-    std::cout << "4. Accepted control connection from " << ctrl_bdaddr << std::endl;
-
-    // std::cout << "6. Waiting for Interrupt channel connection..." << std::endl;
 
     /* Accept interrupt connection */
     sockaddr_l2 rem_addr_intr{};
@@ -299,6 +341,11 @@ BluetoothConnection listen_for_connections(){
         return conn;
     }
 
+    char ctrl_bdaddr[18] = { 0 };
+    ba2str(&rem_addr_ctrl.l2_bdaddr, ctrl_bdaddr);
+
+    std::cout << "4. Accepted control connection from " << ctrl_bdaddr << std::endl;
+
     char intr_bdaddr[18] = { 0 };
     ba2str(&rem_addr_intr.l2_bdaddr, intr_bdaddr);
 
@@ -309,7 +356,6 @@ BluetoothConnection listen_for_connections(){
     return conn;
 }
 
-/* === KEY TABLE === */
 std::map<std::string, uint8_t> keytable = {
     {"KEY_RESERVED", 0 },
     {"KEY_ESC", 41 },
@@ -474,7 +520,6 @@ std::map<std::string, uint8_t> keytable = {
     {"KEY_F24", 115}
 };
 
-/* === MOD KEY === */
 std::map<std::string, int> modkeys = {
     {"KEY_RIGHTMETA", 0},
     {"KEY_RIGHTALT", 1},
@@ -486,7 +531,6 @@ std::map<std::string, int> modkeys = {
     {"KEY_LEFTCTRL", 7}
 };
 
-/* === FUNCTION CONVER EVDEV KEYCODE INTO HID KEYCODE === */
 int convert(const std::string& evdev_keycode) {
     if (keytable.find(evdev_keycode) != keytable.end()) {
         return keytable[evdev_keycode];
@@ -496,7 +540,6 @@ int convert(const std::string& evdev_keycode) {
     }
 }
 
-/* === FUNCTION MODIFY KEY CHECKER === */
 int modkey(const std::string& evdev_keycode) {
     if (modkeys.find(evdev_keycode) != modkeys.end()) {
         return modkeys[evdev_keycode];
@@ -505,7 +548,6 @@ int modkey(const std::string& evdev_keycode) {
     }
 }
 
-/* === SEND KEY === */
 bool send_keys(const BluetoothConnection &conn, uint8_t modifier_byte, const std::array<uint8_t, 6> &keys) {
     /* HID input report: 10 bytes
      *   0  : Button states (buttons 1-8)
@@ -537,7 +579,6 @@ bool send_keys(const BluetoothConnection &conn, uint8_t modifier_byte, const std
     }
 }
 
-/* === SEND MOUSE === */
 bool send_mouse(const BluetoothConnection &conn, uint8_t buttons, const std::array<int8_t, 3> &rel_move) {
     /* 
      * Mouse HID Report Format
@@ -582,7 +623,6 @@ bool send_mouse(const BluetoothConnection &conn, uint8_t buttons, const std::arr
     return true;
 }
 
-/* === SEND STRING UPGRADE === */
 void send_string_input(const BluetoothConnection &conn, const std::string &text, float key_down_time = 0.01, float key_delay = 0.05) {
     for (const char &c : text) {
         if (c < 32 || c > 126) {
@@ -625,15 +665,13 @@ void send_string_input(const BluetoothConnection &conn, const std::string &text,
     }
 }
 
-/* === CLOSE CONNECTION === */
 void close_connection(BluetoothConnection &conn){
-    std::cout << "Bluetooth HID connection closed!" << std::endl; 
+    // std::cout << "Bluetooth HID connection closed!" << std::endl; 
 
     close(conn.control_client);
     close(conn.interrupt_client);
 }
 
-/* === INIT BLUEZ PROFILE === */
 void init_bluez_profile(GDBusProxy *proxy){
     if (!proxy) {
         std::cerr << "Proxy is null! Cannot register profile." << std::endl;
@@ -696,7 +734,6 @@ void init_bluez_profile(GDBusProxy *proxy){
     if (ret) g_variant_unref(ret);  
 }
 
-/* === INIT SERVER === */
 void init_server(){
     GDBusProxy *proxy = NULL;
     GDBusConnection *conn = NULL;
@@ -739,6 +776,7 @@ void init_server(){
     /* Step 5: Listen new connection */
     BluetoothConnection bt_conn = listen_for_connections();
     if (bt_conn.control_client > 0 && bt_conn.interrupt_client > 0) {
+
         std::cout << "Ready to send HID reports!" << std::endl;
 
         std::string v;
@@ -781,7 +819,6 @@ void init_server(){
     g_object_unref(conn);
 }
 
-/* === MAIN === */
 int main(int argc, char *argv[]) {
     if (geteuid() != 0) {
         std::cerr << "Only root can run this script" << std::endl;
