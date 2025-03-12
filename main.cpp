@@ -13,6 +13,7 @@
 #include <chrono>
 #include <atomic>
 #include <algorithm>
+#include <errno.h>
 
 #include <gio/gio.h>
 #include <glib.h>
@@ -32,6 +33,13 @@ std::atomic<bool> pairingAgentRunning(false);
 std::atomic<bool> paired_successfully(false);
 std::atomic<bool> connect_successfully(false);
 
+bool input_active = false;
+
+GDBusProxy *proxy = NULL;
+GDBusConnection *conn = NULL;
+GError *error = NULL;
+GMainLoop *loop = g_main_loop_new(NULL, false);
+
 struct BluetoothConnection {
     int control_socket;
     int interrupt_socket;
@@ -39,7 +47,65 @@ struct BluetoothConnection {
     int interrupt_client;
 };
 
-/* === FUNCTION CHECK DEVICE STATUS === */
+void close_connection(BluetoothConnection &conn){
+
+    if (conn.control_client > 0) {
+        close(conn.control_client);
+        conn.control_client = 0;
+    }
+
+    if (conn.interrupt_client > 0) {
+        close(conn.interrupt_client);
+        conn.interrupt_client = 0;
+    }
+    
+}
+
+void cleanup_connection(BluetoothConnection &conn){
+    
+    if (conn.control_client > 0) {
+        close(conn.control_client);
+        conn.control_client = 0;
+    }
+
+    if (conn.interrupt_client > 0) {
+        close(conn.interrupt_client);
+        conn.interrupt_client = 0;
+    }
+
+    if (conn.control_socket > 0) {
+        close(conn.control_socket);
+        conn.control_socket = 0;
+    }
+
+    if (conn.interrupt_socket > 0) {
+        close(conn.interrupt_socket);
+        conn.interrupt_socket = 0;
+    }
+
+    // std::cout << "Connection resources cleaned up." << std::endl;
+}
+
+bool is_connected(int sockfd) {
+    char buf;
+    
+    int result = recv(sockfd, &buf, 1, MSG_PEEK | MSG_DONTWAIT);
+
+    if (result == 0) {
+        std::cout << "Peer has closed the connection!" << std::endl;
+        return false;
+    } else if (result < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return true;
+        } else {
+            std::cerr << "Socket error: " << strerror(errno) << std::endl;
+            return false;
+        }
+    }
+    return true;
+}
+
+
 bool is_device_paired(const std::string& mac_address_raw){
     std::string mac_address = mac_address_raw;
     std::transform(mac_address.begin(), mac_address.end(), mac_address.begin(), ::toupper);
@@ -74,7 +140,7 @@ bool is_device_paired(const std::string& mac_address_raw){
     }
 }
 
-/* === HCICONFIG === */
+
 std::string getBluetoothDeviceAddress(const std::string& hci_dev = "hci0"){
     std::string cmd = "hciconfig " + hci_dev;
 
@@ -153,8 +219,6 @@ void read_bluetoothctl_output(int read_fd, int write_fd) {
         while ((pos = lineBuffer.find('\n')) != std::string::npos) {
             std::string line = lineBuffer.substr(0, pos);
             lineBuffer.erase(0, pos + 1);
-
-            // std::cout << "[bluetoothctl]: " << line << std::endl;
 
             std::string line_trim = line;
             line_trim.erase(0, line_trim.find_first_not_of(" \t"));
@@ -275,6 +339,7 @@ BluetoothConnection listen_for_connections(){
 
     if (conn.control_socket < 0 || conn.interrupt_socket < 0) {
         std::cerr << "Failed to create L2CAP server sockets!" << std::endl;
+        cleanup_connection(conn);
         return conn;
     }
 
@@ -296,11 +361,13 @@ BluetoothConnection listen_for_connections(){
     /* Bind control channel */
     if (bind(conn.control_socket, (struct sockaddr *)&loc_addr_ctrl, sizeof(loc_addr_ctrl)) < 0) {
         std::cerr << "Failed to bind control socket!" << std::endl;
+        cleanup_connection(conn);
         return conn;
     }
     /* Bind interupt channel */
     if (bind(conn.interrupt_socket, (struct sockaddr *)&loc_addr_intr, sizeof(loc_addr_intr)) < 0) {
         std::cerr << "Failed to bind interrupt socket!" << std::endl;
+        cleanup_connection(conn);
         return conn;
     }
 
@@ -318,8 +385,8 @@ BluetoothConnection listen_for_connections(){
         pairingAgentRunning.store(false);
     });
 
-    /* Ensure agentThread is finished. */
-    agentThread.join();
+    //agentThread.join(); /* if you want finish Thread first */
+    agentThread.detach(); /* if you want run Thread parallel with main processing */
 
     /* Accept control connection */
     sockaddr_l2 rem_addr_ctrl{};
@@ -328,6 +395,7 @@ BluetoothConnection listen_for_connections(){
 
     if (conn.control_client < 0) {
         std::cerr << "Failed to accept control connection!" << std::endl;
+        cleanup_connection(conn);
         return conn;
     }
 
@@ -338,6 +406,7 @@ BluetoothConnection listen_for_connections(){
 
     if (conn.interrupt_client < 0) {
         std::cerr << "Failed to accept interrupt connection!" << std::endl;
+        cleanup_connection(conn);
         return conn;
     }
 
@@ -665,11 +734,78 @@ void send_string_input(const BluetoothConnection &conn, const std::string &text,
     }
 }
 
-void close_connection(BluetoothConnection &conn){
-    // std::cout << "Bluetooth HID connection closed!" << std::endl; 
+void non_blocking_input(BluetoothConnection &bt_conn){
 
-    close(conn.control_client);
-    close(conn.interrupt_client);
+    std::cout << "\nReady to send HID reports!" << std::endl;
+    std::cout << "=========================" << std::endl;
+    std::cout << "Press q to quit" << std::endl;
+    std::cout << "Press m to send mouse" << std::endl;
+    std::cout << "Type message to send string input" << std::endl;
+    std::cout << "=========================" << std::endl;
+
+    std::cout << "Input >>> " << std::endl;
+
+    std::string input;
+
+    bool running = true;
+    
+    while (running) {
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(STDIN_FILENO, &readfds);
+
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = 500000;  // 500ms timeout
+
+        int retval = select(STDIN_FILENO + 1, &readfds, NULL, NULL, &tv);
+
+        if (retval == -1) {
+            perror("select()");
+            break;
+        } else if (retval) { 
+            /* Have data into input */
+
+            std::getline(std::cin, input);
+
+            if (input == "q") {
+
+                std::cout << "Quit program!" << std::endl;
+
+                cleanup_connection(bt_conn); /* Clean socket & client */
+    
+                if (loop) g_main_loop_unref(loop);
+                if (proxy) g_object_unref(proxy);
+                if (conn) g_object_unref(conn);
+
+                running = false; /* Exit loop */
+
+                exit(0);
+
+            } else if (input == "m") {
+
+                std::cout << "Send mouse" << std::endl;
+                std::array<int8_t, 3> mouse_move = {10, 30, 1};
+
+                if (!send_mouse(bt_conn, 0, mouse_move)) {
+                    std::cerr << "Failed to send mouse report!" << std::endl;
+                }
+
+            } else {
+
+                std::cout << "Send messages" << std::endl;
+                send_string_input(bt_conn, input);
+
+            }
+        } else {
+            /* No data input */
+            if (!is_connected(bt_conn.control_client) || !is_connected(bt_conn.interrupt_client)) {
+                std::cout << "Device disconnected!" << std::endl;
+                cleanup_connection(bt_conn); 
+                running = false;
+            }
+        }
+    }
 }
 
 void init_bluez_profile(GDBusProxy *proxy){
@@ -735,11 +871,6 @@ void init_bluez_profile(GDBusProxy *proxy){
 }
 
 void init_server(){
-    GDBusProxy *proxy = NULL;
-    GDBusConnection *conn = NULL;
-    GError *error = NULL;
-    GMainLoop *loop = g_main_loop_new(NULL, false);
-
     std::cout << "Starting HID Profile Server..." << std::endl;
 
     /* Step 1: Connect to system bus */
@@ -774,39 +905,15 @@ void init_server(){
     init_bluez_profile(proxy);
 
     /* Step 5: Listen new connection */
-    BluetoothConnection bt_conn = listen_for_connections();
-    if (bt_conn.control_client > 0 && bt_conn.interrupt_client > 0) {
+    BluetoothConnection bt_conn = {0};
 
-        std::cout << "Ready to send HID reports!" << std::endl;
+    while (true) {
+        cleanup_connection(bt_conn); /* clean for new socket - client */
 
-        std::string v;
+        bt_conn = listen_for_connections();
 
-        while (true) {
-
-            std::cout << "input str>>> ";
-            std::getline(std::cin, v);
-            
-            if (v == "q") {
-                std::cout << "Exiting loop..." << std::endl;
-                close_connection(bt_conn);
-
-                /* Cleanup */
-                g_main_loop_unref(loop);
-                g_object_unref(proxy);
-                g_object_unref(conn);
-
-                return; /* Exit init_server */ 
-            } else if (v == "m") {
-                std::cout << "Send mouse" << std::endl;
-
-                std::array<int8_t, 3> mouse_move = {10, 30, 1};
-                if (!send_mouse(bt_conn, 0, mouse_move)) {
-                    std::cerr << "Failed to send mouse report!" << std::endl;
-                }
-            } else {
-                std::cout << "Send: " << v << std::endl;
-                send_string_input(bt_conn, v);
-            }
+        if (bt_conn.control_client > 0 && bt_conn.interrupt_client > 0){
+            non_blocking_input(bt_conn);
         }
     }
 
@@ -814,9 +921,9 @@ void init_server(){
     g_main_loop_run(loop);
 
     /* Cleanup */
-    g_main_loop_unref(loop);
-    g_object_unref(proxy);
-    g_object_unref(conn);
+    if (loop) g_main_loop_unref(loop);
+    if (proxy) g_object_unref(proxy);
+    if (conn) g_object_unref(conn);
 }
 
 int main(int argc, char *argv[]) {
