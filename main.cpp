@@ -23,7 +23,7 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 
-#define BT_DEV_NAME "Elink_Bluetooth_Keyboard"
+#define BT_DEV_NAME "Elink Bluetooth Keyboard"
 #define HID_PROFILE_UUID "00001124-0000-1000-8000-00805f9b34fb"
 #define SDP_RECORD_PATH "/etc/bluetooth/sdp_record.xml"
 #define P_CTRL 0x11
@@ -47,20 +47,6 @@ struct BluetoothConnection {
     int interrupt_client;
 };
 
-void close_connection(BluetoothConnection &conn){
-
-    if (conn.control_client > 0) {
-        close(conn.control_client);
-        conn.control_client = 0;
-    }
-
-    if (conn.interrupt_client > 0) {
-        close(conn.interrupt_client);
-        conn.interrupt_client = 0;
-    }
-    
-}
-
 void cleanup_connection(BluetoothConnection &conn){
     
     if (conn.control_client > 0) {
@@ -83,8 +69,15 @@ void cleanup_connection(BluetoothConnection &conn){
         conn.interrupt_socket = 0;
     }
 
-    // std::cout << "Connection resources cleaned up." << std::endl;
 }
+
+/*
+ * The recv() calls are used to receive messages from a socket.
+ * They may be used to receive data on both connectionless 
+ * and connection-oriented sockets.
+ * So, use it to check bluetooth connection between embedded devices
+ *                                     with another bluetooth device.
+ */
 
 bool is_connected(int sockfd) {
     char buf;
@@ -104,42 +97,6 @@ bool is_connected(int sockfd) {
     }
     return true;
 }
-
-
-bool is_device_paired(const std::string& mac_address_raw){
-    std::string mac_address = mac_address_raw;
-    std::transform(mac_address.begin(), mac_address.end(), mac_address.begin(), ::toupper);
-
-    std::string cmd = "bluetoothctl devices";
-
-    FILE* pipe = popen(cmd.c_str(), "r");
-
-    if (!pipe) {
-        std::cerr << "[ERROR] Failed to run bluetoothctl!" << std::endl;
-        return false;
-    }
-
-    char buffer[256];
-    std::string result;
-
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        result += buffer;
-    }
-
-    pclose(pipe);
-
-    std::string upper_result = result;
-    std::transform(upper_result.begin(), upper_result.end(), upper_result.begin(), ::toupper);
-
-    if (upper_result.find(mac_address) != std::string::npos) {
-        std::cout << "[INFO] Device " << mac_address_raw << " is listed in bluetoothctl devices!" << std::endl;
-        return true;
-    } else {
-        std::cout << "[INFO] Device " << mac_address_raw << " is NOT listed in bluetoothctl devices!" << std::endl;
-        return false;
-    }
-}
-
 
 std::string getBluetoothDeviceAddress(const std::string& hci_dev = "hci0"){
     std::string cmd = "hciconfig " + hci_dev;
@@ -237,34 +194,22 @@ void read_bluetoothctl_output(int read_fd, int write_fd) {
                 line.find("Paired: yes") != std::string::npos) {
             
                 paired_successfully = true;
-                // std::cout << "[INFO] Device paired successfully!" << std::endl;
                 break;
             }
-
-            // if (line.find("Paired: no") != std::string::npos) {
-            //     paired_successfully = false;
-            //     std::cout << "[ERROR] Device pairing failed!" << std::endl;
-            //     break;
-            // }
 
             if (line.find("ServicesResolved: yes") != std::string::npos || 
                 line.find("Connected: yes") != std::string::npos) {
             
                 connect_successfully = true;
-                std::cout << "[NOTIF] Device connected!" << std::endl;
                 break;
             }
-
-            // if (line.find("ServicesResolved: yes") != std::string::npos ||
-            //     line.find("Connected: no") != std::string::npos) {
-
-            //     connect_successfully = false;
-            //     std::cout << "[INFO] Device disconnected!" << std::endl;
-            //     break;;
-            // }
         }
     }
 }
+
+/*
+ * Open new thread to process fill agent function
+ */
 
 void autoPairingAgent(){
     int pipe_in[2]; /* Parent WRITE - Child READ -> stdin */
@@ -283,10 +228,10 @@ void autoPairingAgent(){
     }
 
     if (pid == 0) {
-        /* Child -> bluetoothctl */
-        dup2(pipe_in[0], STDIN_FILENO);   /* Read input */
-        dup2(pipe_out[1], STDOUT_FILENO); /* Write output*/
-        dup2(pipe_out[1], STDERR_FILENO);
+        /* Child process: run bluetoothctl */
+        dup2(pipe_in[0], STDIN_FILENO);    // Parent writes -> child's stdin
+        dup2(pipe_out[1], STDOUT_FILENO);  // Child's stdout -> parent reads
+        dup2(pipe_out[1], STDERR_FILENO);  // Also catch stderr
 
         close(pipe_in[1]);
         close(pipe_out[0]);
@@ -295,7 +240,7 @@ void autoPairingAgent(){
         std::cerr << "[ERROR] Failed to exec bluetoothctl!" << std::endl;
         exit(1);
     }
-    /* Parent -> bluetoothctl */
+    /* Parent process */
     close(pipe_in[0]);
     close(pipe_out[1]);
 
@@ -309,9 +254,10 @@ void autoPairingAgent(){
         write(write_fd, full_cmd.c_str(), full_cmd.size());
     };
 
+    /* Wait until pairing or connection success */
     while (true) {
         if (paired_successfully || connect_successfully) {
-            // std::cout << "[NOTIF] Device paired and connected successfully. Exiting loop..." << std::endl;
+            // std::cout << "[NOTIF] Paired or connected successfully. Exiting loop!" << std::endl;
             break;
         }
     }
@@ -734,6 +680,17 @@ void send_string_input(const BluetoothConnection &conn, const std::string &text,
     }
 }
 
+/*
+ * If use normal input, program will wait user type input
+ * so program can't do anything else while waiting for import.
+ * 
+ * Recommend use non_blocking_input, program will not wait user type input
+ * 1. when user type input.
+ *      processing data input
+ * 2. when user dont type input.
+ *      checking bluetooth connection.
+ */
+
 void non_blocking_input(BluetoothConnection &bt_conn){
 
     std::cout << "\nReady to send HID reports!" << std::endl;
@@ -756,7 +713,7 @@ void non_blocking_input(BluetoothConnection &bt_conn){
 
         struct timeval tv;
         tv.tv_sec = 0;
-        tv.tv_usec = 500000;  // 500ms timeout
+        tv.tv_usec = 500000;  // 500ms
 
         int retval = select(STDIN_FILENO + 1, &readfds, NULL, NULL, &tv);
 
@@ -765,7 +722,6 @@ void non_blocking_input(BluetoothConnection &bt_conn){
             break;
         } else if (retval) { 
             /* Have data into input */
-
             std::getline(std::cin, input);
 
             if (input == "q") {
@@ -774,13 +730,14 @@ void non_blocking_input(BluetoothConnection &bt_conn){
 
                 cleanup_connection(bt_conn); /* Clean socket & client */
     
-                if (loop) g_main_loop_unref(loop);
-                if (proxy) g_object_unref(proxy);
-                if (conn) g_object_unref(conn);
+                if (loop) 
+                    g_main_loop_unref(loop);
+                if (proxy) 
+                    g_object_unref(proxy);
+                if (conn) 
+                    g_object_unref(conn);
 
-                running = false; /* Exit loop */
-
-                exit(0);
+                exit(0); /* Exit program */
 
             } else if (input == "m") {
 
@@ -792,16 +749,18 @@ void non_blocking_input(BluetoothConnection &bt_conn){
                 }
 
             } else {
-
                 std::cout << "Send messages" << std::endl;
-                send_string_input(bt_conn, input);
 
+                send_string_input(bt_conn, input);
             }
         } else {
             /* No data input */
-            if (!is_connected(bt_conn.control_client) || !is_connected(bt_conn.interrupt_client)) {
+            if (!is_connected(bt_conn.control_client) && !is_connected(bt_conn.interrupt_client)) {
+
                 std::cout << "Device disconnected!" << std::endl;
+                
                 cleanup_connection(bt_conn); 
+                
                 running = false;
             }
         }
@@ -912,7 +871,7 @@ void init_server(){
 
         bt_conn = listen_for_connections();
 
-        if (bt_conn.control_client > 0 && bt_conn.interrupt_client > 0){
+        if (is_connected(bt_conn.control_client) && is_connected(bt_conn.interrupt_client)){
             non_blocking_input(bt_conn);
         }
     }
@@ -921,9 +880,13 @@ void init_server(){
     g_main_loop_run(loop);
 
     /* Cleanup */
-    if (loop) g_main_loop_unref(loop);
-    if (proxy) g_object_unref(proxy);
-    if (conn) g_object_unref(conn);
+    if (loop) 
+        g_main_loop_unref(loop);
+    if (proxy) 
+        g_object_unref(proxy);
+    if (conn) 
+        g_object_unref(conn);
+
 }
 
 int main(int argc, char *argv[]) {
