@@ -26,14 +26,9 @@
 #define BT_DEV_NAME "Elink Bluetooth Keyboard"
 #define HID_PROFILE_UUID "00001124-0000-1000-8000-00805f9b34fb"
 #define SDP_RECORD_PATH "/etc/bluetooth/sdp_record.xml"
+#define AGENT_PATH "/org/bluez/agent"
 #define P_CTRL 0x11
 #define P_INTR 0x13
-
-#define AGENT_PATH "/org/bluez/agent"
-
-std::atomic<bool> pairingAgentRunning(false);
-std::atomic<bool> paired_successfully(false);
-std::atomic<bool> connect_successfully(false);
 
 bool input_active = false;
 
@@ -160,117 +155,6 @@ std::string load_sdp_service_record(const char* filename) {
     return buffer.str();
 }
 
-// void read_bluetoothctl_output(int read_fd, int write_fd) {
-//     char buffer[512];
-//     std::string lineBuffer;
-
-//     while (true) {
-//         ssize_t bytesRead = read(read_fd, buffer, sizeof(buffer) - 1);
-
-//         if (bytesRead <= 0) {
-//             break;
-//         }
-
-//         buffer[bytesRead] = '\0';
-//         lineBuffer += buffer;
-
-//         size_t pos;
-//         while ((pos = lineBuffer.find('\n')) != std::string::npos) {
-//             std::string line = lineBuffer.substr(0, pos);
-//             lineBuffer.erase(0, pos + 1);
-
-//             std::string line_trim = line;
-//             line_trim.erase(0, line_trim.find_first_not_of(" \t"));
-
-//             /* Skip bluetoothctl console fill command exit */
-//             if (line_trim == "exit") {
-//                 continue;
-//             }
-
-//             if (line.find("Request confirmation") != std::string::npos) {
-//                 std::string yes = "yes\n";
-//                 write(write_fd, yes.c_str(), yes.size());
-//             }
-
-//             if (line.find("Bonded: yes") != std::string::npos || 
-//                 line.find("Paired: yes") != std::string::npos) {
-            
-//                 paired_successfully = true;
-//                 break;
-//             }
-
-//             if (line.find("ServicesResolved: yes") != std::string::npos || 
-//                 line.find("Connected: yes") != std::string::npos) {
-            
-//                 connect_successfully = true;
-//                 break;
-//             }
-//         }
-//     }
-// }
-
-/*
- * Open new thread to process fill agent function
- */
-
-// void autoPairingAgent(){
-//     int pipe_in[2]; /* Parent WRITE - Child READ -> stdin */
-//     int pipe_out[2]; /* Parent READ - Child WRITE -> stdout */
-
-//     if (pipe(pipe_in) == -1 || pipe(pipe_out) == -1) {
-//         std::cerr << "[ERROR] Failed to create pipes!" << std::endl;
-//         return;
-//     }
-
-//     pid_t pid = fork();
-
-//     if (pid == -1) {
-//         std::cerr << "[ERROR] Fork failed!" << std::endl;
-//         return;
-//     }
-
-//     if (pid == 0) {
-//         /* Child process: run bluetoothctl */
-//         dup2(pipe_in[0], STDIN_FILENO);    // Parent writes -> child's stdin
-//         dup2(pipe_out[1], STDOUT_FILENO);  // Child's stdout -> parent reads
-//         dup2(pipe_out[1], STDERR_FILENO);  // Also catch stderr
-
-//         close(pipe_in[1]);
-//         close(pipe_out[0]);
-
-//         execlp("bluetoothctl", "bluetoothctl", nullptr);
-//         std::cerr << "[ERROR] Failed to exec bluetoothctl!" << std::endl;
-//         exit(1);
-//     }
-//     /* Parent process */
-//     close(pipe_in[0]);
-//     close(pipe_out[1]);
-
-//     int write_fd = pipe_in[1];
-//     int read_fd = pipe_out[0];
-
-//     std::thread output_thread(read_bluetoothctl_output, read_fd, write_fd);
-
-//     auto send_cmd = [&](const std::string& cmd) {
-//         std::string full_cmd = cmd + "\n";
-//         write(write_fd, full_cmd.c_str(), full_cmd.size());
-//     };
-
-//     /* Wait until pairing or connection success */
-//     while (true) {
-//         if (paired_successfully || connect_successfully) {
-//             // std::cout << "[NOTIF] Paired or connected successfully. Exiting loop!" << std::endl;
-//             break;
-//         }
-//     }
-
-//     close(write_fd);
-//     output_thread.join();
-
-//     int status;
-//     waitpid(pid, &status, 0);
-// }
-
 BluetoothConnection listen_for_connections(){
 
     std::string bt_addr_str = getBluetoothDeviceAddress();
@@ -324,17 +208,6 @@ BluetoothConnection listen_for_connections(){
     /* Listen */
     listen(conn.control_socket, 1);
     listen(conn.interrupt_socket, 1);
-
-    // /* === RUNNING AGENT PAIRING IN ANOTHER THREAD === */
-    // std::thread agentThread([](){
-    //     pairingAgentRunning = true;
-    //     std::cout << ">>> Running auto pairing agent...\n";
-    //     autoPairingAgent();
-    //     pairingAgentRunning.store(false);
-    // });
-
-    // //agentThread.join(); /* if you want finish Thread first */
-    // agentThread.detach(); /* if you want run Thread parallel with main processing */
 
     /* Accept control connection */
     sockaddr_l2 rem_addr_ctrl{};
@@ -781,43 +654,23 @@ static void bluez_agent_method_call (GDBusConnection *con,
         guint32 passkey = 0;
         const gchar *device_path = NULL;
 
-        g_print("Agent method call: %s.%s()\n", interface, method);
+        g_print("[Agent] Agent method call: %s.%s()\n", interface, method);
 
         if (!strcmp(method, "RequestConfirmation")) {   
-            std::cout << "[DEBUG] Handling RequestConfirmation..." << std::endl;
 
             g_variant_get(params, "(&ou)", &device_path, &passkey); /* Get device & passkey */
-
-            g_print("[Agent] Confirm passkey %06d for device %s -> Auto accepting!\n", passkey, device_path);
+        
+            g_print("[Agent] Confirm passkey %06d for device %s\n", passkey, device_path);
 
             g_dbus_method_invocation_return_value(invocation, NULL);
-
-            GDBusProxy *dev_proxy = g_dbus_proxy_new_sync(conn,
-                                               G_DBUS_PROXY_FLAGS_NONE,
-                                               NULL,
-                                               "org.bluez",
-                                               device_path,
-                                               "org.bluez.Device1",
-                                               NULL,
-                                               &error);
-
-            if (dev_proxy) {
-                g_dbus_proxy_call_sync(dev_proxy,
-                                        "Set",
-                                        g_variant_new("(ssv)", "org.bluez.Device1", "Trusted", g_variant_new_boolean(TRUE)),
-                                        G_DBUS_CALL_FLAGS_NONE,
-                                        -1,
-                                        NULL,
-                                        &error);
-                g_object_unref(dev_proxy);
-            }
+        
         }
         else if (!strcmp(method, "AuthorizeService")) {
             const gchar *device;
             const gchar *uuid;
 
             g_variant_get(params, "(&os)", &device, &uuid);
-            g_print("[Agent] Authorize service %s for device %s -> Auto accepting!\n", uuid, device);
+            g_print("Authorize service %s for device %s -> Auto accepting!\n", uuid, device);
 
             g_dbus_method_invocation_return_value(invocation, NULL);
         }
@@ -825,25 +678,25 @@ static void bluez_agent_method_call (GDBusConnection *con,
             const gchar *device;
             g_variant_get(params, "(&o)", &device);
     
-            g_print("[Agent] RequestAuthorization for device %s -> Auto accepting!\n", device);
+            g_print("RequestAuthorization for device %s -> Auto accepting!\n", device);
             g_dbus_method_invocation_return_value(invocation, NULL);
         }
         else if (!strcmp(method, "Release")) {
-            g_print("[Agent] Release agent\n");
+            g_print("Release agent\n");
             g_dbus_method_invocation_return_value(invocation, NULL);
         }
         else if (!strcmp(method, "Cancel")) {
-            g_print("[Agent] Request canceled\n");
+            g_print("Request canceled\n");
             g_dbus_method_invocation_return_value(invocation, NULL);
         }
         else {
-            g_print("[Agent] Unhandled method: %s\n", method);
+            g_print("Unhandled method: %s\n", method);
             g_dbus_method_invocation_return_dbus_error(invocation, "org.bluez.Error.Rejected", "Method not implemented");
         }
     }
   
 void auto_paring_agent() {
-    /* Step 1. Register object path with Bluez AgentManager1 */
+    /* Step 1. Define agent path */
     const gchar *agent_path = "/test/agent";
 
     /* Step 2. Define agent interface */
@@ -851,13 +704,33 @@ void auto_paring_agent() {
     "<node>"
     "  <interface name='org.bluez.Agent1'>"
     "    <method name='Release'/>"
+    "    <method name='RequestPinCode'>"
+    "      <arg type='o' direction='in'/>"
+    "      <arg type='s' direction='out'/>"
+    "    </method>"
+    "    <method name='DisplayPinCode'>"
+    "      <arg type='o' direction='in'/>"
+    "      <arg type='s' direction='in'/>"
+    "    </method>"
+    "    <method name='RequestPasskey'>"
+    "      <arg type='o' direction='in'/>"
+    "      <arg type='u' direction='out'/>"
+    "    </method>"
+    "    <method name='DisplayPasskey'>"
+    "      <arg type='o' direction='in'/>"
+    "      <arg type='u' direction='in'/>"
+    "      <arg type='q' direction='in'/>"
+    "    </method>"
     "    <method name='RequestConfirmation'>"
-    "      <arg type='o' name='device' direction='in'/>"
-    "      <arg type='u' name='passkey' direction='in'/>"
+    "      <arg type='o' direction='in'/>"
+    "      <arg type='u' direction='in'/>"
+    "    </method>"
+    "    <method name='RequestAuthorization'>"
+    "      <arg type='o' direction='in'/>"
     "    </method>"
     "    <method name='AuthorizeService'>"
-    "      <arg type='o' name='device' direction='in'/>"
-    "      <arg type='s' name='uuid' direction='in'/>"
+    "      <arg type='o' direction='in'/>"
+    "      <arg type='s' direction='in'/>"
     "    </method>"
     "    <method name='Cancel'/>"
     "  </interface>"
@@ -911,11 +784,15 @@ void auto_paring_agent() {
         return;
     }
 
-    /* Step 5. Register Agent with Capability = NoInputNoOutput */
+    /* Step 5. Register Agent with Capability = KeyboardDisplay */
+    /* If use "NoInputOutput".
+     * that is the reason which make "Connected: yes" -> "Connected: no" immediately
+     * and make error wrong pin code or password on device which send connection request.
+    */
     GVariant *res = g_dbus_proxy_call_sync(
                                                 agent_mgr,
                                                 "RegisterAgent",
-                                                g_variant_new("(os)", agent_path, "NoInputNoOutput"),
+                                                g_variant_new("(os)", agent_path, "KeyboardDisplay"),  
                                                 G_DBUS_CALL_FLAGS_NONE,
                                                 -1,
                                                 NULL,
@@ -1032,9 +909,10 @@ void init_server(){
         return;
     }
 
+    /* Step 2: Start auto pairing agent */
     auto_paring_agent();
 
-    /* Step 2: Create proxy for ProfileManager1 */
+    /* Step 3: Create proxy for ProfileManager1 */
     proxy = g_dbus_proxy_new_sync(conn,
                                   G_DBUS_PROXY_FLAGS_NONE,
                                   NULL,
@@ -1043,32 +921,39 @@ void init_server(){
                                   "org.bluez.ProfileManager1",
                                   NULL,
                                   &error);
-
     if (error) {
         std::cerr << "Failed to create D-Bus proxy: " << error->message << std::endl;
         g_error_free(error);
         g_object_unref(conn);
+        g_main_loop_unref(loop);
         return;
     }
 
-    /* Step 3: Init the bluetooth device */
+    /* Step 4: Init the bluetooth device */
     init_bt_device();
 
-    /* Step 4: Register the HID profile */
+    /* Step 5: Register the HID profile */
     init_bluez_profile(proxy);
 
-    /* Step 5: Listen new connection */
-    BluetoothConnection bt_conn = {0};
+    /* Step 6: Start listen connection */
 
-    while (true) {
-        cleanup_connection(bt_conn); /* clean for new socket - client */
+    /* Use Thread for BluetoothConnection listen_for_connection
+     * avoid blocking between g_main_loop_run(loop) & bt_server_thread
+    */
+    std::thread bt_server_thread([](){
+        BluetoothConnection bt_conn = {0};
 
-        bt_conn = listen_for_connections();
+        while (true) {
+            cleanup_connection(bt_conn); 
+            bt_conn = listen_for_connections(); 
 
-        if (is_connected(bt_conn.control_client) && is_connected(bt_conn.interrupt_client)){
-            non_blocking_input(bt_conn);
+            if (is_connected(bt_conn.control_client) && is_connected(bt_conn.interrupt_client)) {
+                non_blocking_input(bt_conn);
+            }
         }
-    }
+    });
+
+    bt_server_thread.detach(); /* Main Thread dont need to wait Listen Thread finish */
 
     /* Start the main loop */
     g_main_loop_run(loop);
