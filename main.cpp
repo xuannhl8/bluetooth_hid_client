@@ -29,6 +29,8 @@
 #define P_CTRL 0x11
 #define P_INTR 0x13
 
+#define AGENT_PATH "/org/bluez/agent"
+
 std::atomic<bool> pairingAgentRunning(false);
 std::atomic<bool> paired_successfully(false);
 std::atomic<bool> connect_successfully(false);
@@ -158,116 +160,116 @@ std::string load_sdp_service_record(const char* filename) {
     return buffer.str();
 }
 
-void read_bluetoothctl_output(int read_fd, int write_fd) {
-    char buffer[512];
-    std::string lineBuffer;
+// void read_bluetoothctl_output(int read_fd, int write_fd) {
+//     char buffer[512];
+//     std::string lineBuffer;
 
-    while (true) {
-        ssize_t bytesRead = read(read_fd, buffer, sizeof(buffer) - 1);
+//     while (true) {
+//         ssize_t bytesRead = read(read_fd, buffer, sizeof(buffer) - 1);
 
-        if (bytesRead <= 0) {
-            break;
-        }
+//         if (bytesRead <= 0) {
+//             break;
+//         }
 
-        buffer[bytesRead] = '\0';
-        lineBuffer += buffer;
+//         buffer[bytesRead] = '\0';
+//         lineBuffer += buffer;
 
-        size_t pos;
-        while ((pos = lineBuffer.find('\n')) != std::string::npos) {
-            std::string line = lineBuffer.substr(0, pos);
-            lineBuffer.erase(0, pos + 1);
+//         size_t pos;
+//         while ((pos = lineBuffer.find('\n')) != std::string::npos) {
+//             std::string line = lineBuffer.substr(0, pos);
+//             lineBuffer.erase(0, pos + 1);
 
-            std::string line_trim = line;
-            line_trim.erase(0, line_trim.find_first_not_of(" \t"));
+//             std::string line_trim = line;
+//             line_trim.erase(0, line_trim.find_first_not_of(" \t"));
 
-            /* Skip bluetoothctl console fill command exit */
-            if (line_trim == "exit") {
-                continue;
-            }
+//             /* Skip bluetoothctl console fill command exit */
+//             if (line_trim == "exit") {
+//                 continue;
+//             }
 
-            if (line.find("Request confirmation") != std::string::npos) {
-                std::string yes = "yes\n";
-                write(write_fd, yes.c_str(), yes.size());
-            }
+//             if (line.find("Request confirmation") != std::string::npos) {
+//                 std::string yes = "yes\n";
+//                 write(write_fd, yes.c_str(), yes.size());
+//             }
 
-            if (line.find("Bonded: yes") != std::string::npos || 
-                line.find("Paired: yes") != std::string::npos) {
+//             if (line.find("Bonded: yes") != std::string::npos || 
+//                 line.find("Paired: yes") != std::string::npos) {
             
-                paired_successfully = true;
-                break;
-            }
+//                 paired_successfully = true;
+//                 break;
+//             }
 
-            if (line.find("ServicesResolved: yes") != std::string::npos || 
-                line.find("Connected: yes") != std::string::npos) {
+//             if (line.find("ServicesResolved: yes") != std::string::npos || 
+//                 line.find("Connected: yes") != std::string::npos) {
             
-                connect_successfully = true;
-                break;
-            }
-        }
-    }
-}
+//                 connect_successfully = true;
+//                 break;
+//             }
+//         }
+//     }
+// }
 
 /*
  * Open new thread to process fill agent function
  */
 
-void autoPairingAgent(){
-    int pipe_in[2]; /* Parent WRITE - Child READ -> stdin */
-    int pipe_out[2]; /* Parent READ - Child WRITE -> stdout */
+// void autoPairingAgent(){
+//     int pipe_in[2]; /* Parent WRITE - Child READ -> stdin */
+//     int pipe_out[2]; /* Parent READ - Child WRITE -> stdout */
 
-    if (pipe(pipe_in) == -1 || pipe(pipe_out) == -1) {
-        std::cerr << "[ERROR] Failed to create pipes!" << std::endl;
-        return;
-    }
+//     if (pipe(pipe_in) == -1 || pipe(pipe_out) == -1) {
+//         std::cerr << "[ERROR] Failed to create pipes!" << std::endl;
+//         return;
+//     }
 
-    pid_t pid = fork();
+//     pid_t pid = fork();
 
-    if (pid == -1) {
-        std::cerr << "[ERROR] Fork failed!" << std::endl;
-        return;
-    }
+//     if (pid == -1) {
+//         std::cerr << "[ERROR] Fork failed!" << std::endl;
+//         return;
+//     }
 
-    if (pid == 0) {
-        /* Child process: run bluetoothctl */
-        dup2(pipe_in[0], STDIN_FILENO);    // Parent writes -> child's stdin
-        dup2(pipe_out[1], STDOUT_FILENO);  // Child's stdout -> parent reads
-        dup2(pipe_out[1], STDERR_FILENO);  // Also catch stderr
+//     if (pid == 0) {
+//         /* Child process: run bluetoothctl */
+//         dup2(pipe_in[0], STDIN_FILENO);    // Parent writes -> child's stdin
+//         dup2(pipe_out[1], STDOUT_FILENO);  // Child's stdout -> parent reads
+//         dup2(pipe_out[1], STDERR_FILENO);  // Also catch stderr
 
-        close(pipe_in[1]);
-        close(pipe_out[0]);
+//         close(pipe_in[1]);
+//         close(pipe_out[0]);
 
-        execlp("bluetoothctl", "bluetoothctl", nullptr);
-        std::cerr << "[ERROR] Failed to exec bluetoothctl!" << std::endl;
-        exit(1);
-    }
-    /* Parent process */
-    close(pipe_in[0]);
-    close(pipe_out[1]);
+//         execlp("bluetoothctl", "bluetoothctl", nullptr);
+//         std::cerr << "[ERROR] Failed to exec bluetoothctl!" << std::endl;
+//         exit(1);
+//     }
+//     /* Parent process */
+//     close(pipe_in[0]);
+//     close(pipe_out[1]);
 
-    int write_fd = pipe_in[1];
-    int read_fd = pipe_out[0];
+//     int write_fd = pipe_in[1];
+//     int read_fd = pipe_out[0];
 
-    std::thread output_thread(read_bluetoothctl_output, read_fd, write_fd);
+//     std::thread output_thread(read_bluetoothctl_output, read_fd, write_fd);
 
-    auto send_cmd = [&](const std::string& cmd) {
-        std::string full_cmd = cmd + "\n";
-        write(write_fd, full_cmd.c_str(), full_cmd.size());
-    };
+//     auto send_cmd = [&](const std::string& cmd) {
+//         std::string full_cmd = cmd + "\n";
+//         write(write_fd, full_cmd.c_str(), full_cmd.size());
+//     };
 
-    /* Wait until pairing or connection success */
-    while (true) {
-        if (paired_successfully || connect_successfully) {
-            // std::cout << "[NOTIF] Paired or connected successfully. Exiting loop!" << std::endl;
-            break;
-        }
-    }
+//     /* Wait until pairing or connection success */
+//     while (true) {
+//         if (paired_successfully || connect_successfully) {
+//             // std::cout << "[NOTIF] Paired or connected successfully. Exiting loop!" << std::endl;
+//             break;
+//         }
+//     }
 
-    close(write_fd);
-    output_thread.join();
+//     close(write_fd);
+//     output_thread.join();
 
-    int status;
-    waitpid(pid, &status, 0);
-}
+//     int status;
+//     waitpid(pid, &status, 0);
+// }
 
 BluetoothConnection listen_for_connections(){
 
@@ -323,16 +325,16 @@ BluetoothConnection listen_for_connections(){
     listen(conn.control_socket, 1);
     listen(conn.interrupt_socket, 1);
 
-    /* === RUNNING AGENT PAIRING IN ANOTHER THREAD === */
-    std::thread agentThread([](){
-        pairingAgentRunning = true;
-        std::cout << ">>> Running auto pairing agent...\n";
-        autoPairingAgent();
-        pairingAgentRunning.store(false);
-    });
+    // /* === RUNNING AGENT PAIRING IN ANOTHER THREAD === */
+    // std::thread agentThread([](){
+    //     pairingAgentRunning = true;
+    //     std::cout << ">>> Running auto pairing agent...\n";
+    //     autoPairingAgent();
+    //     pairingAgentRunning.store(false);
+    // });
 
-    //agentThread.join(); /* if you want finish Thread first */
-    agentThread.detach(); /* if you want run Thread parallel with main processing */
+    // //agentThread.join(); /* if you want finish Thread first */
+    // agentThread.detach(); /* if you want run Thread parallel with main processing */
 
     /* Accept control connection */
     sockaddr_l2 rem_addr_ctrl{};
@@ -767,6 +769,191 @@ void non_blocking_input(BluetoothConnection &bt_conn){
     }
 }
 
+static void bluez_agent_method_call (GDBusConnection *con,
+                                    const gchar *sender,
+                                    const gchar *path,
+                                    const gchar *interface,
+                                    const gchar *method,
+                                    GVariant *params,
+                                    GDBusMethodInvocation *invocation,
+                                    void *user_data)
+    {
+        guint32 passkey = 0;
+        const gchar *device_path = NULL;
+
+        g_print("Agent method call: %s.%s()\n", interface, method);
+
+        if (!strcmp(method, "RequestConfirmation")) {   
+            std::cout << "[DEBUG] Handling RequestConfirmation..." << std::endl;
+
+            g_variant_get(params, "(&ou)", &device_path, &passkey); /* Get device & passkey */
+
+            g_print("[Agent] Confirm passkey %06d for device %s -> Auto accepting!\n", passkey, device_path);
+
+            g_dbus_method_invocation_return_value(invocation, NULL);
+
+            GDBusProxy *dev_proxy = g_dbus_proxy_new_sync(conn,
+                                               G_DBUS_PROXY_FLAGS_NONE,
+                                               NULL,
+                                               "org.bluez",
+                                               device_path,
+                                               "org.bluez.Device1",
+                                               NULL,
+                                               &error);
+
+            if (dev_proxy) {
+                g_dbus_proxy_call_sync(dev_proxy,
+                                        "Set",
+                                        g_variant_new("(ssv)", "org.bluez.Device1", "Trusted", g_variant_new_boolean(TRUE)),
+                                        G_DBUS_CALL_FLAGS_NONE,
+                                        -1,
+                                        NULL,
+                                        &error);
+                g_object_unref(dev_proxy);
+            }
+        }
+        else if (!strcmp(method, "AuthorizeService")) {
+            const gchar *device;
+            const gchar *uuid;
+
+            g_variant_get(params, "(&os)", &device, &uuid);
+            g_print("[Agent] Authorize service %s for device %s -> Auto accepting!\n", uuid, device);
+
+            g_dbus_method_invocation_return_value(invocation, NULL);
+        }
+        else if (!strcmp(method, "RequestAuthorization")) {
+            const gchar *device;
+            g_variant_get(params, "(&o)", &device);
+    
+            g_print("[Agent] RequestAuthorization for device %s -> Auto accepting!\n", device);
+            g_dbus_method_invocation_return_value(invocation, NULL);
+        }
+        else if (!strcmp(method, "Release")) {
+            g_print("[Agent] Release agent\n");
+            g_dbus_method_invocation_return_value(invocation, NULL);
+        }
+        else if (!strcmp(method, "Cancel")) {
+            g_print("[Agent] Request canceled\n");
+            g_dbus_method_invocation_return_value(invocation, NULL);
+        }
+        else {
+            g_print("[Agent] Unhandled method: %s\n", method);
+            g_dbus_method_invocation_return_dbus_error(invocation, "org.bluez.Error.Rejected", "Method not implemented");
+        }
+    }
+  
+void auto_paring_agent() {
+    /* Step 1. Register object path with Bluez AgentManager1 */
+    const gchar *agent_path = "/test/agent";
+
+    /* Step 2. Define agent interface */
+    const gchar *introspection_xml =
+    "<node>"
+    "  <interface name='org.bluez.Agent1'>"
+    "    <method name='Release'/>"
+    "    <method name='RequestConfirmation'>"
+    "      <arg type='o' name='device' direction='in'/>"
+    "      <arg type='u' name='passkey' direction='in'/>"
+    "    </method>"
+    "    <method name='AuthorizeService'>"
+    "      <arg type='o' name='device' direction='in'/>"
+    "      <arg type='s' name='uuid' direction='in'/>"
+    "    </method>"
+    "    <method name='Cancel'/>"
+    "  </interface>"
+    "</node>";
+
+    GDBusNodeInfo *introspection_data = g_dbus_node_info_new_for_xml(introspection_xml, &error);
+    if (!introspection_data) {
+        std::cerr << "Unable to parse introspection XML: " << error->message << std::endl;
+        g_error_free(error);
+        return;
+    }
+
+    static GDBusInterfaceVTable agent_vtable = {
+        .method_call = bluez_agent_method_call,
+        .get_property = NULL,
+        .set_property = NULL
+    };
+    /* Step 3. Register object */
+    guint reg_id = g_dbus_connection_register_object(
+                                                        conn,
+                                                        agent_path,
+                                                        introspection_data->interfaces[0],
+                                                        &agent_vtable,
+                                                        NULL, 
+                                                        NULL, 
+                                                        &error
+                                                    );
+
+    if (!reg_id) {
+        std::cerr << "Failed to register agent object: " << error->message << std::endl;
+        g_error_free(error);
+        g_dbus_node_info_unref(introspection_data);
+        return;
+    }
+
+    /* Step 4. Create proxy to AgentManager1 for register agent path */
+    GDBusProxy *agent_mgr = g_dbus_proxy_new_sync(
+                                                    conn,
+                                                    G_DBUS_PROXY_FLAGS_NONE,
+                                                    NULL,
+                                                    "org.bluez",
+                                                    "/org/bluez",
+                                                    "org.bluez.AgentManager1",
+                                                    NULL,
+                                                    &error
+                                                );
+    
+    if (!agent_mgr) {
+        std::cerr << "Failed to create AgentManager1 proxy: " << error->message << std::endl;
+        g_error_free(error);
+        return;
+    }
+
+    /* Step 5. Register Agent with Capability = NoInputNoOutput */
+    GVariant *res = g_dbus_proxy_call_sync(
+                                                agent_mgr,
+                                                "RegisterAgent",
+                                                g_variant_new("(os)", agent_path, "NoInputNoOutput"),
+                                                G_DBUS_CALL_FLAGS_NONE,
+                                                -1,
+                                                NULL,
+                                                &error
+                                            );
+
+    if (error) {
+        std::cerr << "Failed to register agent: " << error->message << std::endl;
+        g_error_free(error);
+    } else {
+        g_variant_unref(res);
+        std::cout << "Agent registered successfully!" << std::endl;
+
+        /* Step 6. Set default agent */
+        res = g_dbus_proxy_call_sync(
+                                        agent_mgr,
+                                        "RequestDefaultAgent",
+                                        g_variant_new("(o)", agent_path),
+                                        G_DBUS_CALL_FLAGS_NONE,
+                                        -1,
+                                        NULL,
+                                        &error
+                                    );
+
+        if (error) {
+            std::cerr << "Failed to set default agent: " << error->message << std::endl;
+            g_error_free(error);
+        } else {
+            g_variant_unref(res);
+            std::cout << "Agent set as default successfully!" << std::endl;
+        }
+    }
+
+    g_object_unref(agent_mgr);
+    g_dbus_node_info_unref(introspection_data);
+}    
+
+
 void init_bluez_profile(GDBusProxy *proxy){
     if (!proxy) {
         std::cerr << "Proxy is null! Cannot register profile." << std::endl;
@@ -798,13 +985,18 @@ void init_bluez_profile(GDBusProxy *proxy){
                                             g_variant_new_string(BT_DEV_NAME));
     g_variant_builder_add(&options_builder, "{sv}",
                                             "Role",
-                                            g_variant_new_string("server"));                                     
+                                            g_variant_new_string("server"));                                                                        
     g_variant_builder_add(&options_builder, "{sv}",
                                             "RequireAuthentication",
                                             g_variant_new_boolean(false));
     g_variant_builder_add(&options_builder, "{sv}",
                                             "RequireAuthorization",
                                             g_variant_new_boolean(false));  
+
+    /* Optional */                                        
+    g_variant_builder_add(&options_builder, "{sv}",
+                                            "Trusted",
+                                            g_variant_new_boolean(true));     
 
     GVariant *profile = g_variant_new("(osa{sv})",
                                       "/org/bluez/bluetoothhidprofile", 
@@ -839,6 +1031,8 @@ void init_server(){
         g_error_free(error);
         return;
     }
+
+    auto_paring_agent();
 
     /* Step 2: Create proxy for ProfileManager1 */
     proxy = g_dbus_proxy_new_sync(conn,
