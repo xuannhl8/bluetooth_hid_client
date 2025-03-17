@@ -11,7 +11,6 @@
 #include <thread>
 #include <cctype> 
 #include <chrono>
-#include <atomic>
 #include <algorithm>
 #include <errno.h>
 
@@ -20,8 +19,12 @@
 
 #include <bluetooth/bluetooth.h>
 #include <bluetooth/l2cap.h>
+#include <bluetooth/hci.h>
+#include <bluetooth/hci_lib.h>
+
 #include <sys/socket.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
 
 #define BT_DEV_NAME "Elink Bluetooth Keyboard"
 #define HID_PROFILE_UUID "00001124-0000-1000-8000-00805f9b34fb"
@@ -29,8 +32,6 @@
 #define AGENT_PATH "/org/bluez/agent"
 #define P_CTRL 0x11
 #define P_INTR 0x13
-
-bool input_active = false;
 
 GDBusProxy *proxy = NULL;
 GDBusConnection *conn = NULL;
@@ -45,12 +46,12 @@ struct BluetoothConnection {
 };
 
 void cleanup_connection(BluetoothConnection &conn){
-    
+
     if (conn.control_client > 0) {
         close(conn.control_client);
         conn.control_client = 0;
     }
-
+    
     if (conn.interrupt_client > 0) {
         close(conn.interrupt_client);
         conn.interrupt_client = 0;
@@ -95,41 +96,33 @@ bool is_connected(int sockfd) {
     return true;
 }
 
-std::string getBluetoothDeviceAddress(const std::string& hci_dev = "hci0"){
-    std::string cmd = "hciconfig " + hci_dev;
-
-    FILE* pipe = popen(cmd.c_str(), "r");
-
-    if (!pipe) {
-        std::cerr << "[ERROR] Failed to run hciconfig command!" << std::endl;
+std::string getBluetoothDeviceAddress() {
+    int device_id = hci_get_route(NULL);
+    if (device_id < 0) {
+        std::cerr << "[ERROR] No available Bluetooth devices found!" << std::endl;
         return "";
     }
 
-    char buffer[256];
-    std::string result;
-
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        result += buffer;
-    }
-
-    pclose(pipe);
-
-    /* Find BD Address */
-    std::size_t pos = result.find("BD Address:");
-    if (pos == std::string::npos) {
-        std::cerr << "BD Address not found!" << std::endl;
+    int sock = hci_open_dev(device_id);
+    if (sock < 0) {
+        std::cerr << "[ERROR] Failed to open HCI device: " << strerror(errno) << std::endl;
         return "";
     }
 
-    pos += std::string("BD Address:").length();
-
-    while (pos < result.size() && result[pos] == ' ') {
-        ++pos;
+    bdaddr_t bdaddr;
+    if (hci_read_bd_addr(sock, &bdaddr, 1000) < 0) {
+        std::cerr << "[ERROR] hci_read_bd_addr failed: " << strerror(errno) << std::endl;
+        close(sock);
+        return "";
     }
 
-    std::string bt_address = result.substr(pos, 17); 
+    char addr_str[18];
+    ba2str(&bdaddr, addr_str);
+
+    std::string bt_address(addr_str);
     std::cout << "Local Bluetooth Address: " << bt_address << std::endl;
 
+    close(sock);
     return bt_address;
 }
 
@@ -568,14 +561,16 @@ void send_string_input(const BluetoothConnection &conn, const std::string &text,
 
 void non_blocking_input(BluetoothConnection &bt_conn){
 
-    std::cout << "\nReady to send HID reports!" << std::endl;
-    std::cout << "=========================" << std::endl;
-    std::cout << "Press q to quit" << std::endl;
-    std::cout << "Press m to send mouse" << std::endl;
-    std::cout << "Type message to send string input" << std::endl;
-    std::cout << "=========================" << std::endl;
-
-    std::cout << "Input >>> " << std::endl;
+    std::cout << "\n";
+    std::cout << "╔══════════════════════════════════╗" << std::endl;
+    std::cout << "║        HID Report Sender         ║" << std::endl;
+    std::cout << "╠══════════════════════════════════╣" << std::endl;
+    std::cout << "║  [m] Send mouse input            ║" << std::endl;
+    std::cout << "║  [Type] Send keyboard input      ║" << std::endl;
+    std::cout << "║  [q] Quit program                ║" << std::endl;
+    std::cout << "╚══════════════════════════════════╝" << std::endl;
+    std::cout << "Input >>> ";
+    std::cout << "\n";
 
     std::string input;
 
@@ -670,7 +665,7 @@ static void bluez_agent_method_call (GDBusConnection *con,
             const gchar *uuid;
 
             g_variant_get(params, "(&os)", &device, &uuid);
-            g_print("Authorize service %s for device %s -> Auto accepting!\n", uuid, device);
+            g_print("[Agent] Authorize service %s for device %s -> Auto accepting!\n", uuid, device);
 
             g_dbus_method_invocation_return_value(invocation, NULL);
         }
@@ -678,26 +673,26 @@ static void bluez_agent_method_call (GDBusConnection *con,
             const gchar *device;
             g_variant_get(params, "(&o)", &device);
     
-            g_print("RequestAuthorization for device %s -> Auto accepting!\n", device);
+            g_print("[Agent] RequestAuthorization for device %s -> Auto accepting!\n", device);
             g_dbus_method_invocation_return_value(invocation, NULL);
         }
         else if (!strcmp(method, "Release")) {
-            g_print("Release agent\n");
+            g_print("[Agent] Release agent\n");
             g_dbus_method_invocation_return_value(invocation, NULL);
         }
         else if (!strcmp(method, "Cancel")) {
-            g_print("Request canceled\n");
+            g_print("[Agent] Request canceled\n");
             g_dbus_method_invocation_return_value(invocation, NULL);
         }
         else {
-            g_print("Unhandled method: %s\n", method);
+            g_print("[Agent] Unhandled method: %s\n", method);
             g_dbus_method_invocation_return_dbus_error(invocation, "org.bluez.Error.Rejected", "Method not implemented");
         }
     }
   
 void auto_paring_agent() {
     /* Step 1. Define agent path */
-    const gchar *agent_path = "/test/agent";
+    const gchar *agent_path = "/elink/agent";
 
     /* Step 2. Define agent interface */
     const gchar *introspection_xml =
@@ -787,7 +782,7 @@ void auto_paring_agent() {
     /* Step 5. Register Agent with Capability = KeyboardDisplay */
     /* If use "NoInputOutput".
      * that is the reason which make "Connected: yes" -> "Connected: no" immediately
-     * and make error wrong pin code or password on device which send connection request.
+     * and make error incorrect pin or password on device which send connection request.
     */
     GVariant *res = g_dbus_proxy_call_sync(
                                                 agent_mgr,
@@ -953,7 +948,7 @@ void init_server(){
         }
     });
 
-    bt_server_thread.detach(); /* Main Thread dont need to wait Listen Thread finish */
+    bt_server_thread.detach(); /* Running parallel with main thread */ 
 
     /* Start the main loop */
     g_main_loop_run(loop);
